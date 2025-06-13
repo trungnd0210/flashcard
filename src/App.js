@@ -1,21 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query, orderBy, where } from 'firebase/firestore';
 
 // Khai báo các biến toàn cục để ESLint không báo lỗi 'no-undef'
-/* global __app_id, __firebase_config, __initial_auth_token */
+/* global __app_id, __initial_auth_token */
 
 // Global variables provided by the Canvas environment
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// DÁN CẤU HÌNH FIREBASE THỰC TẾ CỦA BẠN VÀO ĐÂY
+// BẠN PHẢI THAY THẾ TẤT CẢ CÁC GIÁ TRỊ PLACEHOLDER BÊN DƯỚI BẰNG THÔNG TIN CỦA DỰ ÁN FIREBASE CỦA BẠN
 const firebaseConfig = {
-  apiKey: "AIzaSyCnf0bO-ufQp9FJk-0O9Jnn7lOjuk9C3i4",
-  authDomain: "flashcard-jiv.firebaseapp.com",
-  projectId: "flashcard-jiv",
+  apiKey: "AIzaSyCnf0bO-ufQp9FJk-0O9Jnn7lOjuk9C3i4", // <-- THAY THẾ BẰNG API KEY CỦA BẠN TỪ FIREBASE CONSOLE
+  authDomain: "flashcard-jiv.firebaseapp.com", // <-- THAY THẾ BẰNG AUTH DOMAIN CỦA BẠN
+  projectId: "flashcard-jiv",             // <-- THAY THẾ BẰNG PROJECT ID CỦA BẠN
   storageBucket: "flashcard-jiv.firebasestorage.app",
   messagingSenderId: "420243020228",
   appId: "1:420243020228:web:cd2753636187e254276c91"
+  // measurementId: "YOUR_FIREBASE_MEASUREMENT_ID" // Có thể có hoặc không, nếu có thì thay thế
 };
+// Hết phần cấu hình Firebase của bạn
+
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 function App() {
@@ -25,11 +31,16 @@ function App() {
   const [newWord, setNewWord] = useState('');
   const [newMeaning, setNewMeaning] = useState('');
   const [newCategory, setNewCategory] = useState('');
+  const [newPronunciation, setNewPronunciation] = useState(''); // New state for pronunciation
+  const [newExampleSentence, setNewExampleSentence] = useState(''); // New state for example sentence
   const [editingWordId, setEditingWordId] = useState(null);
 
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [userDisplayName, setUserDisplayName] = useState(null); // New state for user display name
+  const [userEmail, setUserEmail] = useState(null); // New state for user email
+
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -47,26 +58,42 @@ function App() {
 
       const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
         if (user) {
+          // User is signed in (either anonymously or via Google)
           setUserId(user.uid);
+          setUserDisplayName(user.displayName || user.email || 'Người dùng ẩn danh'); // Use display name or email or default
+          setUserEmail(user.email || 'Ẩn danh'); // Store email
+          setLoading(false);
+          setIsAuthReady(true);
         } else {
+          // User is signed out. Attempt anonymous sign-in as a fallback.
           try {
-            if (initialAuthToken) {
+            if (initialAuthToken) { // For Canvas environment
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            } else {
-              await signInAnonymously(firebaseAuth);
+            } else { // For local development or production, sign in anonymously if no other method selected
+              // await signInAnonymously(firebaseAuth); // Remove this if you only want Google Sign-in
             }
           } catch (authError) {
             console.error("Lỗi xác thực Firebase:", authError);
-            setError("Không thể xác thực người dùng. Vui lòng thử lại.");
+            // Sửa đổi thông báo lỗi để hướng dẫn người dùng kiểm tra cấu hình hoặc miền ủy quyền
+            if (authError.code === 'auth/network-request-failed') {
+              setError("Lỗi kết nối mạng. Vui lòng kiểm tra internet của bạn.");
+            } else if (authError.code === 'auth/invalid-api-key') {
+              setError("Lỗi: Khóa API Firebase không hợp lệ. Vui lòng kiểm tra lại cấu hình Firebase.");
+            } else if (authError.code === 'auth/unauthorized-domain') {
+              setError("Lỗi: Miền ứng dụng chưa được ủy quyền. Vui lòng thêm miền này vào Firebase Console (Authentication -> Settings -> Authorized domains).");
+            } else {
+              setError(`Lỗi xác thực: ${authError.message}. Vui lòng kiểm tra Firebase Console.`);
+            }
           }
+          setLoading(false); // Set loading to false even if anonymous fails
+          setIsAuthReady(true);
         }
-        setIsAuthReady(true);
       });
 
-      return () => unsubscribe();
+      return () => unsubscribe(); // Cleanup auth listener
     } catch (err) {
       console.error("Lỗi khởi tạo Firebase:", err);
-      setError("Không thể khởi tạo ứng dụng. Vui lòng kiểm tra cấu hình.");
+      setError("Không thể khởi tạo ứng dụng. Vui lòng kiểm tra cấu hình Firebase của bạn.");
       setLoading(false);
     }
   }, []);
@@ -77,11 +104,10 @@ function App() {
       setLoading(true);
       setError(null);
       try {
+        // Define the collection path based on user ID and app ID
         const wordsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/words`);
 
-        // Fetch words, prioritizing those due for review
-        // Note: Firestore orderBy needs an index for multiple fields.
-        // For simplicity, we fetch all and sort in memory.
+        // Use onSnapshot to listen for real-time updates
         const unsubscribe = onSnapshot(wordsCollectionRef, (snapshot) => {
           const fetchedWords = snapshot.docs.map(doc => ({
             id: doc.id,
@@ -124,26 +150,81 @@ function App() {
           setLoading(false);
         });
 
-        return () => unsubscribe();
+        return () => unsubscribe(); // Cleanup listener on unmount
       } catch (err) {
         console.error("Lỗi thiết lập lắng nghe Firestore:", err);
         setError("Lỗi khi thiết lập kết nối dữ liệu.");
         setLoading(false);
       }
     } else if (isAuthReady && !userId) {
+      // This state means auth is ready, but no user is logged in
+      // We explicitly don't set an error here if we expect user to sign in via button
       setLoading(false);
-      setError("Không thể truy cập dữ liệu. Vui lòng kiểm tra kết nối.");
+      //setError("Chưa đăng nhập. Vui lòng đăng nhập để truy cập dữ liệu."); // This message might be too strong
     }
   }, [db, userId, isAuthReady]);
 
-  // Function to handle adding or updating a word
+  // Handle Google Sign-in
+  const handleGoogleSignIn = async () => {
+    if (!auth) {
+      setMessage("Hệ thống xác thực chưa sẵn sàng.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      // User is automatically set by onAuthStateChanged listener
+      setMessage("Đăng nhập thành công!");
+      setTimeout(() => setMessage(''), 3000);
+    } catch (authError) {
+      console.error("Lỗi đăng nhập Google:", authError);
+      // Handle specific errors like pop-up closed by user
+      if (authError.code === 'auth/popup-closed-by-user') {
+        setMessage("Đăng nhập bị hủy bởi người dùng.");
+      } else if (authError.code === 'auth/cancelled-popup-request') {
+        setMessage("Bạn đã mở nhiều cửa sổ đăng nhập. Vui lòng chỉ giữ một.");
+      } else if (authError.code === 'auth/unauthorized-domain') {
+        setError("Lỗi: Miền ứng dụng chưa được ủy quyền. Vui lòng thêm miền này vào Firebase Console (Authentication -> Settings -> Authorized domains).");
+      }
+      else {
+        setError(`Lỗi đăng nhập Google: ${authError.message}. Vui lòng thử lại.`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle Sign-out
+  const handleSignOut = async () => {
+    if (!auth) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await signOut(auth);
+      // user will be set to null by onAuthStateChanged listener
+      setUserId(null); // Clear local state
+      setUserDisplayName(null);
+      setUserEmail(null);
+      setWords([]); // Clear words data on sign out
+      setMessage("Đã đăng xuất.");
+      setTimeout(() => setMessage(''), 3000);
+    } catch (signOutError) {
+      console.error("Lỗi đăng xuất:", signOutError);
+      setError("Lỗi khi đăng xuất. Vui lòng thử lại.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmitWord = async () => {
     if (!newWord.trim() || !newMeaning.trim()) {
       setMessage("Vui lòng nhập cả từ và nghĩa.");
       return;
     }
     if (!db || !userId) {
-      setMessage("Hệ thống chưa sẵn sàng. Vui lòng đợi.");
+      setMessage("Bạn cần đăng nhập để thêm từ.");
       return;
     }
 
@@ -155,6 +236,8 @@ function App() {
           word: newWord.trim(),
           meaning: newMeaning.trim(),
           category: newCategory.trim(),
+          pronunciation: newPronunciation.trim(), // Save pronunciation
+          exampleSentence: newExampleSentence.trim(), // Save example sentence
         });
         setMessage("Từ đã được cập nhật thành công!");
         setEditingWordId(null);
@@ -163,18 +246,22 @@ function App() {
           word: newWord.trim(),
           meaning: newMeaning.trim(),
           category: newCategory.trim(),
+          pronunciation: newPronunciation.trim(), // Save pronunciation
+          exampleSentence: newExampleSentence.trim(), // Save example sentence
           timestamp: new Date(),
           lastReviewed: null,
-          correctCount: 0, // New field
-          incorrectCount: 0, // New field
-          interval: 0, // New field (in days)
-          nextReviewDate: null, // New field
+          correctCount: 0,
+          incorrectCount: 0,
+          interval: 0,
+          nextReviewDate: null,
         });
         setMessage("Từ mới đã được thêm thành công!");
       }
       setNewWord('');
       setNewMeaning('');
       setNewCategory('');
+      setNewPronunciation(''); // Clear pronunciation field
+      setNewExampleSentence(''); // Clear example sentence field
       setTimeout(() => setMessage(''), 3000);
     } catch (e) {
       console.error("Lỗi khi thêm/cập nhật từ mới:", e);
@@ -189,6 +276,8 @@ function App() {
     setNewWord(word.word);
     setNewMeaning(word.meaning);
     setNewCategory(word.category || '');
+    setNewPronunciation(word.pronunciation || ''); // Populate pronunciation if it exists
+    setNewExampleSentence(word.exampleSentence || ''); // Populate example sentence if it exists
     setMessage('');
   };
 
@@ -197,17 +286,16 @@ function App() {
     setNewWord('');
     setNewMeaning('');
     setNewCategory('');
+    setNewPronunciation('');
+    setNewExampleSentence('');
     setMessage('');
   };
 
   const handleDeleteWord = async (wordId) => {
     if (!db || !userId) {
-      setMessage("Hệ thống chưa sẵn sàng. Vui lòng đợi.");
+      setMessage("Bạn cần đăng nhập để xóa từ.");
       return;
     }
-
-    // Replace with a custom modal for confirmation
-    // IMPORTANT: Do NOT use window.confirm() in production apps for better UX and consistency.
     if (!window.confirm("Bạn có chắc chắn muốn xóa từ này?")) {
       return;
     }
@@ -229,7 +317,6 @@ function App() {
     setShowMeaning(!showMeaning);
   };
 
-  // Function to calculate next review date based on interval
   const calculateNextReviewDate = (currentInterval) => {
     const today = new Date();
     const nextDate = new Date(today);
@@ -237,7 +324,6 @@ function App() {
     return nextDate;
   };
 
-  // Handle user marking the answer as correct
   const handleAnswerCorrect = async () => {
     if (!currentWord || !db || !userId) return;
 
@@ -248,23 +334,23 @@ function App() {
       const newIncorrectCount = currentWord.incorrectCount || 0;
       let newInterval;
 
-      if (currentWord.interval === 0) { // First correct answer
+      if (currentWord.interval === 0) {
         newInterval = 1;
       } else {
-        newInterval = currentWord.interval * 2; // Double the interval
+        newInterval = currentWord.interval * 2;
       }
 
       await updateDoc(wordRef, {
         correctCount: newCorrectCount,
-        incorrectCount: newIncorrectCount, // Keep incorrect count
+        incorrectCount: newIncorrectCount,
         lastReviewed: new Date(),
         interval: newInterval,
         nextReviewDate: calculateNextReviewDate(newInterval),
       });
       setMessage("Tuyệt vời! Từ đã được cập nhật.");
       setTimeout(() => setMessage(''), 2000);
-      setShowMeaning(false); // Hide meaning for next card
-      handleNextCardOnly(); // Move to next card
+      setShowMeaning(false);
+      handleNextCardOnly();
     } catch (e) {
       console.error("Lỗi khi cập nhật trạng thái đúng:", e);
       setMessage("Lỗi: Không thể cập nhật trạng thái từ.");
@@ -273,16 +359,15 @@ function App() {
     }
   };
 
-  // Handle user marking the answer as incorrect
   const handleAnswerIncorrect = async () => {
     if (!currentWord || !db || !userId) return;
 
     setLoading(true);
     try {
       const wordRef = doc(db, `artifacts/${appId}/users/${userId}/words`, currentWord.id);
-      const newCorrectCount = currentWord.correctCount || 0; // Keep correct count
+      const newCorrectCount = currentWord.correctCount || 0;
       const newIncorrectCount = (currentWord.incorrectCount || 0) + 1;
-      const newInterval = 1; // Reset interval to 1 day for incorrect answers
+      const newInterval = 1;
 
       await updateDoc(wordRef, {
         correctCount: newCorrectCount,
@@ -293,8 +378,8 @@ function App() {
       });
       setMessage("Không sao cả! Hãy ôn lại từ này sớm nhé.");
       setTimeout(() => setMessage(''), 2000);
-      setShowMeaning(false); // Hide meaning for next card
-      handleNextCardOnly(); // Move to next card
+      setShowMeaning(false);
+      handleNextCardOnly();
     } catch (e) {
       console.error("Lỗi khi cập nhật trạng thái sai:", e);
       setMessage("Lỗi: Không thể cập nhật trạng thái từ.");
@@ -317,7 +402,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter text-gray-800 flex flex-col items-center">
-
       <style>
         {`
           .font-inter {
@@ -332,8 +416,8 @@ function App() {
             position: relative;
             transform-style: preserve-3d;
             transition: transform 0.6s;
-            border-radius: 1rem; /* rounded-xl */
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* shadow-xl */
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
           }
           .flashcard.flipped {
             transform: rotateY(180deg);
@@ -346,31 +430,73 @@ function App() {
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 1.5rem; /* p-6 */
+            padding: 1.5rem;
             text-align: center;
-            border-radius: 1rem; /* rounded-xl */
+            border-radius: 1rem;
             background-color: white;
-            color: #374151; /* text-gray-700 */
-            font-size: 1.875rem; /* text-3xl */
-            font-weight: 600; /* font-semibold */
+            color: #374151;
+            font-size: 1.875rem;
+            font-weight: 600;
+            flex-direction: column; /* Allow content to stack vertically */
+            gap: 0.5rem; /* Space between elements */
           }
           .flashcard-front {
             background-color: #ffffff;
-            color: #1f2937; /* text-gray-900 */
+            color: #1f2937;
           }
           .flashcard-back {
             transform: rotateY(180deg);
-            background-color: #edf2f7; /* bg-gray-100 */
-            color: #1f2937; /* text-gray-900 */
+            background-color: #edf2f7;
+            color: #1f2937;
+          }
+          .flashcard-text-primary {
+            font-size: 1.875rem; /* text-3xl */
+            font-weight: 600; /* font-semibold */
+            color: #1f2937;
+          }
+          .flashcard-text-secondary {
+            font-size: 1.125rem; /* text-lg */
+            font-weight: 400; /* font-normal */
+            color: #4b5563;
+          }
+          .flashcard-text-tertiary {
+            font-size: 0.875rem; /* text-sm */
+            font-style: italic;
+            color: #6b7280;
           }
         `}
       </style>
 
       <header className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8 text-center">
         <h1 className="text-4xl font-extrabold text-blue-600 mb-2">Học Từ Vựng</h1>
-        <p className="text-lg text-gray-600">Thêm từ mới và học chúng với Flashcard!</p>
+        <p className="text-lg text-gray-600 mb-4">Thêm từ mới và học chúng với Flashcard!</p>
+
+        {/* Thông tin người dùng và nút đăng nhập/đăng xuất */}
+        {loading ? (
+          <p className="text-sm text-gray-500">Đang tải...</p>
+        ) : userId ? (
+          <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-4">
+            <p className="text-md text-gray-700 font-semibold">
+              Xin chào, {userDisplayName || userEmail}
+            </p>
+            <button
+              onClick={handleSignOut}
+              className="bg-red-500 text-white py-2 px-4 rounded-lg shadow-md hover:bg-red-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 text-sm"
+            >
+              Đăng xuất
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleGoogleSignIn}
+            className="bg-blue-600 text-white py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 text-md font-semibold"
+          >
+            Đăng nhập bằng Google
+          </button>
+        )}
+        {/* ID người dùng (chỉ hiển thị trong môi trường Canvas hoặc debug) */}
         {userId && (
-          <p className="text-sm text-gray-500 mt-2">ID người dùng: <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">{userId}</span></p>
+          <p className="text-sm text-gray-500 mt-2">ID: <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">{userId}</span></p>
         )}
       </header>
 
@@ -391,198 +517,247 @@ function App() {
         <div className="text-blue-600 text-lg mb-4">Đang tải...</div>
       )}
 
-      {/* Phần thêm/chỉnh sửa từ mới */}
-      <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">
-          {editingWordId ? 'Chỉnh Sửa Từ' : 'Thêm Từ Mới'}
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <input
-            type="text"
-            placeholder="Từ (ví dụ: 'hello')"
-            value={newWord}
-            onChange={(e) => setNewWord(e.target.value)}
-            className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="text"
-            placeholder="Nghĩa (ví dụ: 'xin chào')"
-            value={newMeaning}
-            onChange={(e) => setNewMeaning(e.target.value)}
-            className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="text"
-            placeholder="Danh mục (ví dụ: 'Động từ')"
-            value={newCategory}
-            onChange={(e) => setNewCategory(e.target.value)}
-            className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="flex space-x-4">
-          <button
-            onClick={handleSubmitWord}
-            className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-          >
-            {editingWordId ? 'Cập Nhật Từ' : 'Thêm Từ'}
-          </button>
-          {editingWordId && (
-            <button
-              onClick={handleCancelEdit}
-              className="flex-1 bg-gray-400 text-white py-3 px-6 rounded-lg shadow-md hover:bg-gray-500 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-            >
-              Hủy Chỉnh Sửa
-            </button>
-          )}
-        </div>
-      </section>
-
-      {/* Phần Flashcard */}
-      <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Học Flashcard</h2>
-        {words.length === 0 ? (
-          <p className="text-center text-gray-600 text-lg py-10">
-            Bạn chưa có từ nào trong danh sách. Hãy thêm một vài từ để bắt đầu học!
-          </p>
-        ) : (
-          <>
-            <div className="flashcard-container w-full max-w-md mx-auto mb-6">
-              <div
-                className={`flashcard cursor-pointer ${showMeaning ? 'flipped' : ''}`}
-                onClick={handleFlipCard}
-              >
-                <div className="flashcard-face flashcard-front">
-                  {currentWord ? currentWord.word : 'Tải từ...'}
-                  {currentWord?.category && (
-                    <span className="absolute top-4 left-4 text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                      {currentWord.category}
-                    </span>
-                  )}
-                </div>
-                <div className="flashcard-face flashcard-back">
-                  {currentWord ? currentWord.meaning : 'Tải nghĩa...'}
-                  {currentWord?.lastReviewed && (
-                    <span className="absolute bottom-4 right-4 text-xs text-gray-400">
-                      Ôn tập lần cuối: {new Date(currentWord.lastReviewed.toDate()).toLocaleDateString()}
-                    </span>
-                  )}
-                  {currentWord?.nextReviewDate && (
-                    <span className="absolute bottom-4 left-4 text-xs text-blue-400">
-                      Ôn tập tiếp theo: {new Date(currentWord.nextReviewDate.toDate()).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-              </div>
+      {/* Các phần chức năng (Thêm từ, Flashcard, Quản lý) chỉ hiển thị khi đã đăng nhập */}
+      {userId ? (
+        <>
+          {/* Phần thêm/chỉnh sửa từ mới */}
+          <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">
+              {editingWordId ? 'Chỉnh Sửa Từ' : 'Thêm Từ Mới'}
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4"> {/* Changed to 3 columns for inputs */}
+              <input
+                type="text"
+                placeholder="Từ (ví dụ: 'hello')"
+                value={newWord}
+                onChange={(e) => setNewWord(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Nghĩa (ví dụ: 'xin chào')"
+                value={newMeaning}
+                onChange={(e) => setNewMeaning(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Danh mục (ví dụ: 'Động từ')"
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Phiên âm (ví dụ: /həˈləʊ/)"
+                value={newPronunciation}
+                onChange={(e) => setNewPronunciation(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Câu ví dụ (không bắt buộc)"
+                value={newExampleSentence}
+                onChange={(e) => setNewExampleSentence(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 col-span-1 md:col-span-2 lg:col-span-1"
+              />
             </div>
-
-            <div className="flex justify-center space-x-4 mb-4">
+            <div className="flex space-x-4">
               <button
-                onClick={handlePrevCardOnly}
-                disabled={words.length <= 1}
-                className="bg-gray-200 text-gray-800 py-3 px-6 rounded-lg shadow-md hover:bg-gray-300 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleSubmitWord}
+                className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
-                Trước
+                {editingWordId ? 'Cập Nhật Từ' : 'Thêm Từ'}
               </button>
-              <button
-                onClick={handleFlipCard}
-                className="bg-purple-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-purple-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2"
-              >
-                Lật Thẻ
-              </button>
-              <button
-                onClick={handleNextCardOnly}
-                disabled={words.length <= 1}
-                className="bg-gray-200 text-gray-800 py-3 px-6 rounded-lg shadow-md hover:bg-gray-300 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Tiếp
-              </button>
+              {editingWordId && (
+                <button
+                  onClick={handleCancelEdit}
+                  className="flex-1 bg-gray-400 text-white py-3 px-6 rounded-lg shadow-md hover:bg-gray-500 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
+                >
+                  Hủy Chỉnh Sửa
+                </button>
+              )}
             </div>
+          </section>
 
-            {showMeaning && (
-              <div className="flex justify-center space-x-4">
-                <button
-                  onClick={handleAnswerCorrect}
-                  className="bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
-                >
-                  Tôi nhớ!
-                </button>
-                <button
-                  onClick={handleAnswerIncorrect}
-                  className="bg-red-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-red-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-                >
-                  Tôi không nhớ
-                </button>
+          {/* Phần Flashcard */}
+          <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Học Flashcard</h2>
+            {words.length === 0 ? (
+              <p className="text-center text-gray-600 text-lg py-10">
+                Bạn chưa có từ nào trong danh sách. Hãy thêm một vài từ để bắt đầu học!
+              </p>
+            ) : (
+              <>
+                <div className="flashcard-container w-full max-w-md mx-auto mb-6">
+                  <div
+                    className={`flashcard cursor-pointer ${showMeaning ? 'flipped' : ''}`}
+                    onClick={handleFlipCard}
+                  >
+                    <div className="flashcard-face flashcard-front">
+                      <span className="flashcard-text-primary">{currentWord ? currentWord.word : 'Tải từ...'}</span>
+                      {currentWord?.pronunciation && (
+                        <span className="flashcard-text-secondary text-gray-500">{currentWord.pronunciation}</span>
+                      )}
+                      {currentWord?.category && (
+                        <span className="absolute top-4 left-4 text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+                          {currentWord.category}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flashcard-face flashcard-back">
+                      <span className="flashcard-text-primary">{currentWord ? currentWord.meaning : 'Tải nghĩa...'}</span>
+                      {currentWord?.exampleSentence && (
+                        <span className="flashcard-text-tertiary text-gray-600 mt-2">"{currentWord.exampleSentence}"</span>
+                      )}
+                      {currentWord?.lastReviewed && (
+                        <span className="absolute bottom-4 right-4 text-xs text-gray-400">
+                          Ôn tập lần cuối: {new Date(currentWord.lastReviewed.toDate()).toLocaleDateString()}
+                        </span>
+                      )}
+                      {currentWord?.nextReviewDate && (
+                        <span className="absolute bottom-4 left-4 text-xs text-blue-400">
+                          Ôn tập tiếp theo: {new Date(currentWord.nextReviewDate.toDate()).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-center space-x-4 mb-4">
+                  <button
+                    onClick={handlePrevCardOnly}
+                    disabled={words.length <= 1}
+                    className="bg-gray-200 text-gray-800 py-3 px-6 rounded-lg shadow-md hover:bg-gray-300 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Trước
+                  </button>
+                  <button
+                    onClick={handleFlipCard}
+                    className="bg-purple-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-purple-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2"
+                  >
+                    Lật Thẻ
+                  </button>
+                  <button
+                    onClick={handleNextCardOnly}
+                    disabled={words.length <= 1}
+                    className="bg-gray-200 text-gray-800 py-3 px-6 rounded-lg shadow-md hover:bg-gray-300 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Tiếp
+                  </button>
+                </div>
+
+                {showMeaning && (
+                  <div className="flex justify-center space-x-4">
+                    <button
+                      onClick={handleAnswerCorrect}
+                      className="bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                    >
+                      Tôi nhớ!
+                    </button>
+                    <button
+                      onClick={handleAnswerIncorrect}
+                      className="bg-red-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-red-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+                    >
+                      Tôi không nhớ
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-center text-gray-600 mt-4">
+                  {currentWordIndex + 1} / {words.length}
+                </p>
+              </>
+            )}
+          </section>
+
+          {/* Phần quản lý từ vựng */}
+          <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Quản Lý Từ Vựng</h2>
+            {words.length === 0 ? (
+              <p className="text-center text-gray-600 text-lg py-10">
+                Chưa có từ nào để quản lý. Hãy thêm một vài từ!
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full bg-white rounded-lg shadow-md">
+                  <thead>
+                    <tr className="bg-gray-100 text-gray-600 uppercase text-sm leading-normal">
+                      <th className="py-3 px-6 text-left">Từ</th>
+                      <th className="py-3 px-6 text-left">Phiên âm</th> {/* New column */}
+                      <th className="py-3 px-6 text-left">Nghĩa</th>
+                      <th className="py-3 px-6 text-left">Câu ví dụ</th> {/* New column */}
+                      <th className="py-3 px-6 text-left">Danh mục</th>
+                      <th className="py-3 px-6 text-left">Đúng</th>
+                      <th className="py-3 px-6 text-left">Sai</th>
+                      <th className="py-3 px-6 text-left">Khoảng</th>
+                      <th className="py-3 px-6 text-left">Ôn tập lần cuối</th>
+                      <th className="py-3 px-6 text-left">Ôn tập tiếp theo</th>
+                      <th className="py-3 px-6 text-center">Hành động</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-gray-700 text-sm font-light">
+                    {words.map((word) => (
+                      <tr key={word.id} className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">{word.word}</td>
+                        <td className="py-3 px-6 text-left">{word.pronunciation || 'N/A'}</td> {/* Display pronunciation */}
+                        <td className="py-3 px-6 text-left">{word.meaning}</td>
+                        <td className="py-3 px-6 text-left">{word.exampleSentence || 'N/A'}</td> {/* Display example sentence */}
+                        <td className="py-3 px-6 text-left">{word.category || 'N/A'}</td>
+                        <td className="py-3 px-6 text-left">{word.correctCount || 0}</td>
+                        <td className="py-3 px-6 text-left">{word.incorrectCount || 0}</td>
+                        <td className="py-3 px-6 text-left">{word.interval || 0} ngày</td>
+                        <td className="py-3 px-6 text-left">
+                          {word.lastReviewed ? new Date(word.lastReviewed.toDate()).toLocaleDateString() : 'Chưa ôn tập'}
+                        </td>
+                        <td className="py-3 px-6 text-left">
+                          {word.nextReviewDate ? new Date(word.nextReviewDate.toDate()).toLocaleDateString() : 'N/A'}
+                        </td>
+                        <td className="py-3 px-6 text-center">
+                          <div className="flex item-center justify-center space-x-2">
+                            <button
+                              onClick={() => handleEditClick(word)}
+                              className="bg-yellow-500 text-white py-1 px-3 rounded-lg text-xs shadow-sm hover:bg-yellow-600 transition duration-200"
+                            >
+                              Chỉnh sửa
+                            </button>
+                            <button
+                              onClick={() => handleDeleteWord(word.id)}
+                              className="bg-red-500 text-white py-1 px-3 rounded-lg text-xs shadow-sm hover:bg-red-600 transition duration-200"
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-
-            <p className="text-center text-gray-600 mt-4">
-              {currentWordIndex + 1} / {words.length}
-            </p>
-          </>
-        )}
-      </section>
-
-      {/* Phần quản lý từ vựng */}
-      <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Quản Lý Từ Vựng</h2>
-        {words.length === 0 ? (
-          <p className="text-center text-gray-600 text-lg py-10">
-            Chưa có từ nào để quản lý. Hãy thêm một vài từ!
+          </section>
+        </>
+      ) : (
+        // Hiển thị thông báo khi chưa đăng nhập
+        <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 text-center">
+          <p className="text-xl text-gray-700 font-semibold mb-4">
+            Chào mừng bạn đến với ứng dụng Học Từ Vựng!
           </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full bg-white rounded-lg shadow-md">
-              <thead>
-                <tr className="bg-gray-100 text-gray-600 uppercase text-sm leading-normal">
-                  <th className="py-3 px-6 text-left">Từ</th>
-                  <th className="py-3 px-6 text-left">Nghĩa</th>
-                  <th className="py-3 px-6 text-left">Danh mục</th>
-                  <th className="py-3 px-6 text-left">Đúng</th>
-                  <th className="py-3 px-6 text-left">Sai</th>
-                  <th className="py-3 px-6 text-left">Khoảng</th>
-                  <th className="py-3 px-6 text-left">Ôn tập lần cuối</th>
-                  <th className="py-3 px-6 text-left">Ôn tập tiếp theo</th>
-                  <th className="py-3 px-6 text-center">Hành động</th>
-                </tr>
-              </thead>
-              <tbody className="text-gray-700 text-sm font-light">
-                {words.map((word) => (
-                  <tr key={word.id} className="border-b border-gray-200 hover:bg-gray-50">
-                    <td className="py-3 px-6 text-left whitespace-nowrap">{word.word}</td>
-                    <td className="py-3 px-6 text-left">{word.meaning}</td>
-                    <td className="py-3 px-6 text-left">{word.category || 'N/A'}</td>
-                    <td className="py-3 px-6 text-left">{word.correctCount || 0}</td>
-                    <td className="py-3 px-6 text-left">{word.incorrectCount || 0}</td>
-                    <td className="py-3 px-6 text-left">{word.interval || 0} ngày</td>
-                    <td className="py-3 px-6 text-left">
-                      {word.lastReviewed ? new Date(word.lastReviewed.toDate()).toLocaleDateString() : 'Chưa ôn tập'}
-                    </td>
-                    <td className="py-3 px-6 text-left">
-                      {word.nextReviewDate ? new Date(word.nextReviewDate.toDate()).toLocaleDateString() : 'N/A'}
-                    </td>
-                    <td className="py-3 px-6 text-center">
-                      <div className="flex item-center justify-center space-x-2">
-                        <button
-                          onClick={() => handleEditClick(word)}
-                          className="bg-yellow-500 text-white py-1 px-3 rounded-lg text-xs shadow-sm hover:bg-yellow-600 transition duration-200"
-                        >
-                          Chỉnh sửa
-                        </button>
-                        <button
-                          onClick={() => handleDeleteWord(word.id)}
-                          className="bg-red-500 text-white py-1 px-3 rounded-lg text-xs shadow-sm hover:bg-red-600 transition duration-200"
-                        >
-                          Xóa
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+          <p className="text-md text-gray-600 mb-6">
+            Vui lòng đăng nhập bằng tài khoản Google để bắt đầu thêm từ mới và học Flashcard.
+          </p>
+          {loading ? (
+             <p className="text-blue-500">Đang chờ đăng nhập...</p>
+          ) : (
+             <button
+                onClick={handleGoogleSignIn}
+                className="bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 text-lg font-semibold"
+              >
+                Đăng nhập bằng Google
+              </button>
+          )}
+        </section>
+      )}
     </div>
   );
 }

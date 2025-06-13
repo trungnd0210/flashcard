@@ -1,0 +1,8 @@
+const firebaseConfig = {
+  apiKey: "AIzaSyCnf0bO-ufQp9FJk-0O9Jnn7lOjuk9C3i4",
+  authDomain: "flashcard-jiv.firebaseapp.com",
+  projectId: "flashcard-jiv",
+  storageBucket: "flashcard-jiv.firebasestorage.app",
+  messagingSenderId: "420243020228",
+  appId: "1:420243020228:web:cd2753636187e254276c91"
+};
