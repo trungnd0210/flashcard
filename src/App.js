@@ -31,20 +31,22 @@ function App() {
   const [newWord, setNewWord] = useState('');
   const [newMeaning, setNewMeaning] = useState('');
   const [newCategory, setNewCategory] = useState('');
-  const [newPronunciation, setNewPronunciation] = useState(''); // New state for pronunciation
-  const [newExampleSentence, setNewExampleSentence] = useState(''); // New state for example sentence
+  const [newPronunciation, setNewPronunciation] = useState('');
+  const [newExampleSentence, setNewExampleSentence] = useState('');
   const [editingWordId, setEditingWordId] = useState(null);
 
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
   const [userId, setUserId] = useState(null);
-  const [userDisplayName, setUserDisplayName] = useState(null); // New state for user display name
-  const [userEmail, setUserEmail] = useState(null); // New state for user email
+  const [userDisplayName, setUserDisplayName] = useState(null);
+  const [userEmail, setUserEmail] = useState(null);
 
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [message, setMessage] = useState('');
+  const [geminiLoading, setGeminiLoading] = useState(false); // State for Gemini API loading
+  const [suggestedRelatedWords, setSuggestedRelatedWords] = useState([]); // State for related words from Gemini
 
   // Initialize Firebase and handle authentication
   useEffect(() => {
@@ -58,23 +60,20 @@ function App() {
 
       const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
         if (user) {
-          // User is signed in (either anonymously or via Google)
           setUserId(user.uid);
-          setUserDisplayName(user.displayName || user.email || 'Người dùng ẩn danh'); // Use display name or email or default
-          setUserEmail(user.email || 'Ẩn danh'); // Store email
+          setUserDisplayName(user.displayName || user.email || 'Người dùng ẩn danh');
+          setUserEmail(user.email || 'Ẩn danh');
           setLoading(false);
           setIsAuthReady(true);
         } else {
-          // User is signed out. Attempt anonymous sign-in as a fallback.
           try {
-            if (initialAuthToken) { // For Canvas environment
+            if (initialAuthToken) {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            } else { // For local development or production, sign in anonymously if no other method selected
+            } else {
               // await signInAnonymously(firebaseAuth); // Remove this if you only want Google Sign-in
             }
           } catch (authError) {
             console.error("Lỗi xác thực Firebase:", authError);
-            // Sửa đổi thông báo lỗi để hướng dẫn người dùng kiểm tra cấu hình hoặc miền ủy quyền
             if (authError.code === 'auth/network-request-failed') {
               setError("Lỗi kết nối mạng. Vui lòng kiểm tra internet của bạn.");
             } else if (authError.code === 'auth/invalid-api-key') {
@@ -85,12 +84,12 @@ function App() {
               setError(`Lỗi xác thực: ${authError.message}. Vui lòng kiểm tra Firebase Console.`);
             }
           }
-          setLoading(false); // Set loading to false even if anonymous fails
+          setLoading(false);
           setIsAuthReady(true);
         }
       });
 
-      return () => unsubscribe(); // Cleanup auth listener
+      return () => unsubscribe();
     } catch (err) {
       console.error("Lỗi khởi tạo Firebase:", err);
       setError("Không thể khởi tạo ứng dụng. Vui lòng kiểm tra cấu hình Firebase của bạn.");
@@ -104,36 +103,29 @@ function App() {
       setLoading(true);
       setError(null);
       try {
-        // Define the collection path based on user ID and app ID
         const wordsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/words`);
 
-        // Use onSnapshot to listen for real-time updates
         const unsubscribe = onSnapshot(wordsCollectionRef, (snapshot) => {
           const fetchedWords = snapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
           }));
 
-          // Sort words: prioritize those with nextReviewDate in the past or null,
-          // then by nextReviewDate ascending, then by timestamp for new words.
           fetchedWords.sort((a, b) => {
-            const aNextReview = a.nextReviewDate ? a.nextReviewDate.toDate().getTime() : 0; // 0 means needs review now
+            const aNextReview = a.nextReviewDate ? a.nextReviewDate.toDate().getTime() : 0;
             const bNextReview = b.nextReviewDate ? b.nextReviewDate.toDate().getTime() : 0;
 
             const now = new Date().getTime();
 
-            // Prioritize overdue cards (nextReviewDate <= now)
             const aOverdue = aNextReview <= now && aNextReview !== 0;
             const bOverdue = bNextReview <= now && bNextReview !== 0;
 
             if (aOverdue && !bOverdue) return -1;
             if (!aOverdue && bOverdue) return 1;
 
-            // If both are overdue or neither is, sort by nextReviewDate (earliest first)
             if (aNextReview < bNextReview) return -1;
             if (aNextReview > bNextReview) return 1;
 
-            // If nextReviewDate is same or null, sort by original timestamp
             return (a.timestamp?.toDate() || 0) - (b.timestamp?.toDate() || 0);
           });
 
@@ -150,17 +142,14 @@ function App() {
           setLoading(false);
         });
 
-        return () => unsubscribe(); // Cleanup listener on unmount
+        return () => unsubscribe();
       } catch (err) {
         console.error("Lỗi thiết lập lắng nghe Firestore:", err);
         setError("Lỗi khi thiết lập kết nối dữ liệu.");
         setLoading(false);
       }
     } else if (isAuthReady && !userId) {
-      // This state means auth is ready, but no user is logged in
-      // We explicitly don't set an error here if we expect user to sign in via button
       setLoading(false);
-      //setError("Chưa đăng nhập. Vui lòng đăng nhập để truy cập dữ liệu."); // This message might be too strong
     }
   }, [db, userId, isAuthReady]);
 
@@ -175,12 +164,10 @@ function App() {
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-      // User is automatically set by onAuthStateChanged listener
       setMessage("Đăng nhập thành công!");
       setTimeout(() => setMessage(''), 3000);
     } catch (authError) {
       console.error("Lỗi đăng nhập Google:", authError);
-      // Handle specific errors like pop-up closed by user
       if (authError.code === 'auth/popup-closed-by-user') {
         setMessage("Đăng nhập bị hủy bởi người dùng.");
       } else if (authError.code === 'auth/cancelled-popup-request') {
@@ -203,11 +190,11 @@ function App() {
     setError(null);
     try {
       await signOut(auth);
-      // user will be set to null by onAuthStateChanged listener
-      setUserId(null); // Clear local state
+      setUserId(null);
       setUserDisplayName(null);
       setUserEmail(null);
-      setWords([]); // Clear words data on sign out
+      setWords([]);
+      setSuggestedRelatedWords([]);
       setMessage("Đã đăng xuất.");
       setTimeout(() => setMessage(''), 3000);
     } catch (signOutError) {
@@ -215,6 +202,149 @@ function App() {
       setError("Lỗi khi đăng xuất. Vui lòng thử lại.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Function to call Gemini API for meaning and example sentence
+  const suggestMeaningAndExample = async () => {
+    if (!newWord.trim()) {
+      setMessage("Vui lòng nhập từ bạn muốn gợi ý nghĩa.");
+      return;
+    }
+    setGeminiLoading(true);
+    setMessage('');
+    setError(null);
+
+    try {
+      let chatHistory = [];
+      // Cập nhật prompt để yêu cầu chi tiết hơn: nghĩa tiếng Việt, phiên âm IPA, câu ví dụ tiếng Anh, danh mục tiếng Việt
+      const prompt = `Generate the Vietnamese meaning, IPA pronunciation, an English example sentence (concise), and a Vietnamese category (e.g., 'Danh từ', 'Động từ', 'Tính từ', 'Trạng từ') for the English word: "${newWord.trim()}". Provide the output as a JSON object with keys 'meaning_vi', 'pronunciation_ipa', 'exampleSentence_en', and 'category_vi'.`;
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = {
+        contents: chatHistory,
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              meaning_vi: { type: "STRING" },
+              pronunciation_ipa: { type: "STRING" },
+              exampleSentence_en: { type: "STRING" },
+              category_vi: { type: "STRING" }
+            },
+            propertyOrdering: ["meaning_vi", "pronunciation_ipa", "exampleSentence_en", "category_vi"]
+          }
+        }
+      };
+
+      // THAY THẾ CHỖ NÀY BẰNG API KEY THỰC TẾ CỦA BẠN TỪ GOOGLE CLOUD CONSOLE
+      const apiKey = "AIzaSyBNKU6ZzXgtarPkW-ZWuEoNcO6rWvVqwl8"; // Đã điền API Key
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({ message: 'Không thể phân tích phản hồi lỗi.' }));
+        console.error("Lỗi gọi API Gemini (gợi ý nghĩa):", response.status, "Chi tiết:", errorBody);
+        setError(`Lỗi từ AI: ${errorBody.error?.message || 'Không xác định.'} (Mã lỗi: ${response.status})`);
+        return; // Dừng xử lý tiếp nếu có lỗi HTTP
+      }
+
+      const result = await response.json();
+
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const jsonText = result.candidates[0].content.parts[0].text;
+        const parsedJson = JSON.parse(jsonText);
+
+        setNewMeaning(parsedJson.meaning_vi || '');
+        setNewPronunciation(parsedJson.pronunciation_ipa || '');
+        setNewExampleSentence(parsedJson.exampleSentence_en || '');
+        setNewCategory(parsedJson.category_vi || '');
+        setMessage("Đã gợi ý nghĩa, phiên âm, ví dụ và danh mục từ AI.");
+      } else {
+        console.error("API Gemini (gợi ý nghĩa) trả về cấu trúc không mong muốn:", result);
+        setMessage("Không thể gợi ý nghĩa/ví dụ. Phản hồi AI không hợp lệ.");
+      }
+    } catch (apiError) {
+      console.error("Lỗi khi gọi API Gemini (gợi ý nghĩa):", apiError);
+      setError("Lỗi kết nối với AI. Vui lòng kiểm tra internet và thử lại.");
+    } finally {
+      setGeminiLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  // Function to call Gemini API for related words
+  const suggestRelatedWordsFromAI = async () => {
+    if (!currentWord || !currentWord.word) {
+      setMessage("Không có từ nào để gợi ý liên quan.");
+      return;
+    }
+    setGeminiLoading(true);
+    setSuggestedRelatedWords([]); // Clear previous suggestions
+    setMessage('');
+    setError(null);
+
+    try {
+      let chatHistory = [];
+      // Cập nhật prompt để yêu cầu 5 từ tiếng Anh liên quan
+      const prompt = `Suggest 5 related English words (single words, no phrases) to the English word: "${currentWord.word}". Provide the output as a JSON array of strings.`;
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = {
+        contents: chatHistory,
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "ARRAY",
+            items: { type: "STRING" }
+          }
+        }
+      };
+
+      // THAY THẾ CHỖ NÀY BẰNG API KEY THỰC TẾ CỦA BẠN TỪ GOOGLE CLOUD CONSOLE
+      const apiKey = "AIzaSyBNKU6ZzXgtarPkW-ZWuEoNcO6rWvVqwl8"; // Đã điền API Key
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({ message: 'Không thể phân tích phản hồi lỗi.' }));
+        console.error("Lỗi gọi API Gemini (từ liên quan):", response.status, "Chi tiết:", errorBody);
+        setError(`Lỗi từ AI: ${errorBody.error?.message || 'Không xác định.'} (Mã lỗi: ${response.status})`);
+        return; // Dừng xử lý tiếp nếu có lỗi HTTP
+      }
+
+      const result = await response.json();
+
+      if (result.candidates && result.candidates.length > 0 &&
+          result.candidates[0].content && result.candidates[0].content.parts &&
+          result.candidates[0].content.parts.length > 0) {
+        const jsonText = result.candidates[0].content.parts[0].text;
+        const parsedJson = JSON.parse(jsonText);
+        setSuggestedRelatedWords(parsedJson);
+        setMessage("Đã gợi ý từ liên quan từ AI.");
+      } else {
+        console.error("API Gemini (từ liên quan) trả về cấu trúc không mong muốn:", result);
+        setMessage("Không thể gợi ý từ liên quan. Phản hồi AI không hợp lệ.");
+      }
+    } catch (apiError) {
+      console.error("Lỗi khi gọi API Gemini cho từ liên quan:", apiError);
+      setError("Lỗi kết nối với AI để gợi ý từ liên quan. Vui lòng kiểm tra internet và thử lại.");
+    } finally {
+      setGeminiLoading(false);
+      setTimeout(() => setMessage(''), 3000);
     }
   };
 
@@ -236,8 +366,8 @@ function App() {
           word: newWord.trim(),
           meaning: newMeaning.trim(),
           category: newCategory.trim(),
-          pronunciation: newPronunciation.trim(), // Save pronunciation
-          exampleSentence: newExampleSentence.trim(), // Save example sentence
+          pronunciation: newPronunciation.trim(),
+          exampleSentence: newExampleSentence.trim(),
         });
         setMessage("Từ đã được cập nhật thành công!");
         setEditingWordId(null);
@@ -246,8 +376,8 @@ function App() {
           word: newWord.trim(),
           meaning: newMeaning.trim(),
           category: newCategory.trim(),
-          pronunciation: newPronunciation.trim(), // Save pronunciation
-          exampleSentence: newExampleSentence.trim(), // Save example sentence
+          pronunciation: newPronunciation.trim(),
+          exampleSentence: newExampleSentence.trim(),
           timestamp: new Date(),
           lastReviewed: null,
           correctCount: 0,
@@ -260,8 +390,8 @@ function App() {
       setNewWord('');
       setNewMeaning('');
       setNewCategory('');
-      setNewPronunciation(''); // Clear pronunciation field
-      setNewExampleSentence(''); // Clear example sentence field
+      setNewPronunciation('');
+      setNewExampleSentence('');
       setTimeout(() => setMessage(''), 3000);
     } catch (e) {
       console.error("Lỗi khi thêm/cập nhật từ mới:", e);
@@ -276,8 +406,8 @@ function App() {
     setNewWord(word.word);
     setNewMeaning(word.meaning);
     setNewCategory(word.category || '');
-    setNewPronunciation(word.pronunciation || ''); // Populate pronunciation if it exists
-    setNewExampleSentence(word.exampleSentence || ''); // Populate example sentence if it exists
+    setNewPronunciation(word.pronunciation || '');
+    setNewExampleSentence(word.exampleSentence || '');
     setMessage('');
   };
 
@@ -399,6 +529,14 @@ function App() {
   };
 
   const currentWord = words[currentWordIndex];
+
+  // Hàm xử lý khi nhấp vào một từ gợi ý
+  const handleSelectSuggestedWord = (word) => {
+    setNewWord(word); // Chuyển từ gợi ý vào ô "Từ"
+    setSuggestedRelatedWords([]); // Xóa danh sách gợi ý sau khi chọn
+    // Bạn có thể cân nhắc gọi suggestMeaningAndExample(word) ở đây để tự động điền các trường khác
+    // nhưng để đơn giản, tôi sẽ không làm vậy để tránh gọi API tự động quá nhiều
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter text-gray-800 flex flex-col items-center">
@@ -525,7 +663,7 @@ function App() {
             <h2 className="text-2xl font-bold text-gray-800 mb-4">
               {editingWordId ? 'Chỉnh Sửa Từ' : 'Thêm Từ Mới'}
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4"> {/* Changed to 3 columns for inputs */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
               <input
                 type="text"
                 placeholder="Từ (ví dụ: 'hello')"
@@ -568,6 +706,13 @@ function App() {
                 className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 {editingWordId ? 'Cập Nhật Từ' : 'Thêm Từ'}
+              </button>
+              <button
+                onClick={suggestMeaningAndExample}
+                disabled={geminiLoading}
+                className="flex-1 bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {geminiLoading ? 'Đang gợi ý...' : 'Gợi ý từ AI'}
               </button>
               {editingWordId && (
                 <button
@@ -648,7 +793,7 @@ function App() {
                 </div>
 
                 {showMeaning && (
-                  <div className="flex justify-center space-x-4">
+                  <div className="flex justify-center space-x-4 mb-4">
                     <button
                       onClick={handleAnswerCorrect}
                       className="bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
@@ -661,6 +806,36 @@ function App() {
                     >
                       Tôi không nhớ
                     </button>
+                  </div>
+                )}
+
+                {/* Phần gợi ý từ liên quan từ AI */}
+                {currentWord && (
+                  <div className="flex justify-center mt-4">
+                    <button
+                      onClick={suggestRelatedWordsFromAI}
+                      disabled={geminiLoading}
+                      className="bg-indigo-500 text-white py-2 px-4 rounded-lg shadow-md hover:bg-indigo-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 text-sm"
+                    >
+                      {geminiLoading ? 'Đang gợi ý...' : 'Gợi ý từ liên quan từ AI'}
+                    </button>
+                  </div>
+                )}
+
+                {suggestedRelatedWords.length > 0 && (
+                  <div className="mt-6 p-4 bg-blue-50 rounded-lg shadow-inner">
+                    <h3 className="text-lg font-semibold text-blue-700 mb-2">Từ liên quan được gợi ý:</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {suggestedRelatedWords.map((relatedWord, index) => (
+                        <span
+                          key={index}
+                          className="bg-blue-200 text-blue-800 px-3 py-1 rounded-full text-sm cursor-pointer hover:bg-blue-300 transition duration-200 ease-in-out"
+                          onClick={() => handleSelectSuggestedWord(relatedWord)} // Thêm onClick handler
+                        >
+                          {relatedWord}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -684,9 +859,9 @@ function App() {
                   <thead>
                     <tr className="bg-gray-100 text-gray-600 uppercase text-sm leading-normal">
                       <th className="py-3 px-6 text-left">Từ</th>
-                      <th className="py-3 px-6 text-left">Phiên âm</th> {/* New column */}
+                      <th className="py-3 px-6 text-left">Phiên âm</th>
                       <th className="py-3 px-6 text-left">Nghĩa</th>
-                      <th className="py-3 px-6 text-left">Câu ví dụ</th> {/* New column */}
+                      <th className="py-3 px-6 text-left">Câu ví dụ</th>
                       <th className="py-3 px-6 text-left">Danh mục</th>
                       <th className="py-3 px-6 text-left">Đúng</th>
                       <th className="py-3 px-6 text-left">Sai</th>
@@ -700,9 +875,9 @@ function App() {
                     {words.map((word) => (
                       <tr key={word.id} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="py-3 px-6 text-left whitespace-nowrap">{word.word}</td>
-                        <td className="py-3 px-6 text-left">{word.pronunciation || 'N/A'}</td> {/* Display pronunciation */}
+                        <td className="py-3 px-6 text-left">{word.pronunciation || 'N/A'}</td>
                         <td className="py-3 px-6 text-left">{word.meaning}</td>
-                        <td className="py-3 px-6 text-left">{word.exampleSentence || 'N/A'}</td> {/* Display example sentence */}
+                        <td className="py-3 px-6 text-left">{word.exampleSentence || 'N/A'}</td>
                         <td className="py-3 px-6 text-left">{word.category || 'N/A'}</td>
                         <td className="py-3 px-6 text-left">{word.correctCount || 0}</td>
                         <td className="py-3 px-6 text-left">{word.incorrectCount || 0}</td>
