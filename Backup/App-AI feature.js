@@ -24,9 +24,6 @@ const firebaseConfig = {
 
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// THAY THẾ CHỖ NÀY BẰNG API KEY THỰC TẾ CỦA BẠN TỪ GOOGLE CLOUD CONSOLE
-const GEMINI_API_KEY = "AIzaSyBNKU6ZzXgtarPkW-ZWuEoNcO6rWvVqwl8"; // Đã điền API Key
-
 function App() {
   const [words, setWords] = useState([]);
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
@@ -48,14 +45,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [message, setMessage] = useState('');
-  const [geminiLoading, setGeminiLoading] = useState(false);
-  const [suggestedRelatedWords, setSuggestedRelatedWords] = useState([]);
-
-  // New states for Grammar Tab
-  const [activeTab, setActiveTab] = useState('addWord'); // 'addWord' or 'grammar'
-  const [grammarTopic, setGrammarTopic] = useState('');
-  const [grammarExplanation, setGrammarExplanation] = useState(null); // { explanation, examples, suggestedWords }
-  const [grammarLoading, setGrammarLoading] = useState(false);
+  const [geminiLoading, setGeminiLoading] = useState(false); // State for Gemini API loading
+  const [suggestedRelatedWords, setSuggestedRelatedWords] = useState([]); // State for related words from Gemini
 
   // Initialize Firebase and handle authentication
   useEffect(() => {
@@ -79,7 +70,7 @@ function App() {
             if (initialAuthToken) {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
             } else {
-              // await signInAnonymously(firebaseAuth); // Bỏ ghi chú nếu muốn giữ đăng nhập ẩn danh
+              // await signInAnonymously(firebaseAuth); // Remove this if you only want Google Sign-in
             }
           } catch (authError) {
             console.error("Lỗi xác thực Firebase:", authError);
@@ -140,11 +131,10 @@ function App() {
 
           setWords(fetchedWords);
           setLoading(false);
-          // Fix: Ensure currentWordIndex is valid after words update
-          if (fetchedWords.length > 0 && currentWordIndex >= fetchedWords.length) {
+          if (currentWordIndex >= fetchedWords.length && fetchedWords.length > 0) {
             setCurrentWordIndex(0);
           } else if (fetchedWords.length === 0) {
-            setCurrentWordIndex(0); // Reset index if no words
+            setCurrentWordIndex(0);
           }
         }, (err) => {
           console.error("Lỗi khi tải từ vựng:", err);
@@ -161,7 +151,7 @@ function App() {
     } else if (isAuthReady && !userId) {
       setLoading(false);
     }
-  }, [db, userId, isAuthReady, currentWordIndex]); // Added currentWordIndex to dependency array
+  }, [db, userId, isAuthReady]);
 
   // Handle Google Sign-in
   const handleGoogleSignIn = async () => {
@@ -217,52 +207,40 @@ function App() {
 
   // Function to call Gemini API for meaning and example sentence
   const suggestMeaningAndExample = async () => {
-    if (!newWord.trim() && !newMeaning.trim()) { // Yêu cầu ít nhất 1 trường có dữ liệu
-      setMessage("Vui lòng nhập từ tiếng Anh hoặc nghĩa tiếng Việt để gợi ý.");
+    if (!newWord.trim()) {
+      setMessage("Vui lòng nhập từ bạn muốn gợi ý nghĩa.");
       return;
     }
     setGeminiLoading(true);
     setMessage('');
     setError(null);
-    setSuggestedRelatedWords([]); // Clear any previous related word suggestions
 
     try {
       let chatHistory = [];
-      let prompt = '';
-      let responseSchema = {};
-
-      if (newWord.trim()) { // User entered an English word, suggest details
-        prompt = `Generate the Vietnamese meaning, IPA pronunciation, an English example sentence (concise), and a Vietnamese category (e.g., 'Danh từ', 'Động từ', 'Tính từ', 'Trạng từ', 'Cụm từ') for the English word/phrase: "${newWord.trim()}". Provide the output as a JSON object with keys 'meaning_vi', 'pronunciation_ipa', 'exampleSentence_en', and 'category_vi'.`;
-        responseSchema = {
-          type: "OBJECT",
-          properties: {
-            meaning_vi: { type: "STRING" },
-            pronunciation_ipa: { type: "STRING" },
-            exampleSentence_en: { type: "STRING" },
-            category_vi: { type: "STRING" }
-          },
-          propertyOrdering: ["meaning_vi", "pronunciation_ipa", "exampleSentence_en", "category_vi"]
-        };
-      } else if (newMeaning.trim()) { // User entered Vietnamese meaning, suggest English words/phrases
-        // Cập nhật prompt để gợi ý cả từ riêng lẻ và cụm từ/cấu trúc ngữ pháp
-        prompt = `Suggest 5 concise English words or common phrases/grammatical structures (single words, no complex sentences) that mean or relate to "${newMeaning.trim()}" in Vietnamese. Provide the output as a JSON array of strings.`;
-        responseSchema = {
-          type: "ARRAY",
-          items: { type: "STRING" }
-        };
-      }
-
+      // Cập nhật prompt để yêu cầu chi tiết hơn: nghĩa tiếng Việt, phiên âm IPA, câu ví dụ tiếng Anh, danh mục tiếng Việt
+      const prompt = `Generate the Vietnamese meaning, IPA pronunciation, an English example sentence (concise), and a Vietnamese category (e.g., 'Danh từ', 'Động từ', 'Tính từ', 'Trạng từ') for the English word: "${newWord.trim()}". Provide the output as a JSON object with keys 'meaning_vi', 'pronunciation_ipa', 'exampleSentence_en', and 'category_vi'.`;
       chatHistory.push({ role: "user", parts: [{ text: prompt }] });
 
       const payload = {
         contents: chatHistory,
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: responseSchema
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              meaning_vi: { type: "STRING" },
+              pronunciation_ipa: { type: "STRING" },
+              exampleSentence_en: { type: "STRING" },
+              category_vi: { type: "STRING" }
+            },
+            propertyOrdering: ["meaning_vi", "pronunciation_ipa", "exampleSentence_en", "category_vi"]
+          }
         }
       };
 
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+      // THAY THẾ CHỖ NÀY BẰNG API KEY THỰC TẾ CỦA BẠN TỪ GOOGLE CLOUD CONSOLE
+      const apiKey = "AIzaSyBNKU6ZzXgtarPkW-ZWuEoNcO6rWvVqwl8"; // Đã điền API Key
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -272,9 +250,9 @@ function App() {
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => ({ message: 'Không thể phân tích phản hồi lỗi.' }));
-        console.error("Lỗi gọi API Gemini (gợi ý nghĩa/từ):", response.status, "Chi tiết:", errorBody);
+        console.error("Lỗi gọi API Gemini (gợi ý nghĩa):", response.status, "Chi tiết:", errorBody);
         setError(`Lỗi từ AI: ${errorBody.error?.message || 'Không xác định.'} (Mã lỗi: ${response.status})`);
-        return;
+        return; // Dừng xử lý tiếp nếu có lỗi HTTP
       }
 
       const result = await response.json();
@@ -285,22 +263,17 @@ function App() {
         const jsonText = result.candidates[0].content.parts[0].text;
         const parsedJson = JSON.parse(jsonText);
 
-        if (newWord.trim()) { // Original English word suggestion
-          setNewMeaning(parsedJson.meaning_vi || '');
-          setNewPronunciation(parsedJson.pronunciation_ipa || '');
-          setNewExampleSentence(parsedJson.exampleSentence_en || '');
-          setNewCategory(parsedJson.category_vi || '');
-          setMessage("Đã gợi ý nghĩa, phiên âm, ví dụ và danh mục từ AI.");
-        } else if (newMeaning.trim()) { // Vietnamese meaning -> English word suggestions
-          setSuggestedRelatedWords(parsedJson); // Use suggestedRelatedWords state for these
-          setMessage("Đã gợi ý từ tiếng Anh liên quan từ AI.");
-        }
+        setNewMeaning(parsedJson.meaning_vi || '');
+        setNewPronunciation(parsedJson.pronunciation_ipa || '');
+        setNewExampleSentence(parsedJson.exampleSentence_en || '');
+        setNewCategory(parsedJson.category_vi || '');
+        setMessage("Đã gợi ý nghĩa, phiên âm, ví dụ và danh mục từ AI.");
       } else {
-        console.error("API Gemini (gợi ý nghĩa/từ) trả về cấu trúc không mong muốn:", result);
-        setMessage("Không thể gợi ý. Phản hồi AI không hợp lệ.");
+        console.error("API Gemini (gợi ý nghĩa) trả về cấu trúc không mong muốn:", result);
+        setMessage("Không thể gợi ý nghĩa/ví dụ. Phản hồi AI không hợp lệ.");
       }
     } catch (apiError) {
-      console.error("Lỗi khi gọi API Gemini (gợi ý nghĩa/từ):", apiError);
+      console.error("Lỗi khi gọi API Gemini (gợi ý nghĩa):", apiError);
       setError("Lỗi kết nối với AI. Vui lòng kiểm tra internet và thử lại.");
     } finally {
       setGeminiLoading(false);
@@ -308,7 +281,7 @@ function App() {
     }
   };
 
-  // Function to call Gemini API for related English words (when reviewing flashcards)
+  // Function to call Gemini API for related words
   const suggestRelatedWordsFromAI = async () => {
     if (!currentWord || !currentWord.word) {
       setMessage("Không có từ nào để gợi ý liên quan.");
@@ -321,8 +294,8 @@ function App() {
 
     try {
       let chatHistory = [];
-      // Cập nhật prompt để yêu cầu 5 từ tiếng Anh hoặc cụm từ liên quan
-      const prompt = `Suggest 5 related English words or common phrases/grammatical structures (e.g., phrasal verbs, idioms, common sentence patterns) to the English word: "${currentWord.word}". Provide the output as a JSON array of strings.`;
+      // Cập nhật prompt để yêu cầu 5 từ tiếng Anh liên quan
+      const prompt = `Suggest 5 related English words (single words, no phrases) to the English word: "${currentWord.word}". Provide the output as a JSON array of strings.`;
       chatHistory.push({ role: "user", parts: [{ text: prompt }] });
 
       const payload = {
@@ -336,7 +309,9 @@ function App() {
         }
       };
 
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+      // THAY THẾ CHỖ NÀY BẰNG API KEY THỰC TẾ CỦA BẠN TỪ GOOGLE CLOUD CONSOLE
+      const apiKey = "AIzaSyBNKU6ZzXgtarPkW-ZWuEoNcO6rWvVqwl8"; // Đã điền API Key
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -348,7 +323,7 @@ function App() {
         const errorBody = await response.json().catch(() => ({ message: 'Không thể phân tích phản hồi lỗi.' }));
         console.error("Lỗi gọi API Gemini (từ liên quan):", response.status, "Chi tiết:", errorBody);
         setError(`Lỗi từ AI: ${errorBody.error?.message || 'Không xác định.'} (Mã lỗi: ${response.status})`);
-        return;
+        return; // Dừng xử lý tiếp nếu có lỗi HTTP
       }
 
       const result = await response.json();
@@ -369,76 +344,6 @@ function App() {
       setError("Lỗi kết nối với AI để gợi ý từ liên quan. Vui lòng kiểm tra internet và thử lại.");
     } finally {
       setGeminiLoading(false);
-      setTimeout(() => setMessage(''), 3000);
-    }
-  };
-
-  // Function to get grammar explanation and related words
-  const getGrammarExplanationAndWords = async () => {
-    if (!grammarTopic.trim()) {
-      setMessage("Vui lòng nhập chủ đề ngữ pháp.");
-      return;
-    }
-    setGrammarLoading(true);
-    setMessage('');
-    setError(null);
-    setGrammarExplanation(null); // Clear previous explanation
-
-    try {
-      let chatHistory = [];
-      // Cập nhật prompt để gợi ý cả từ riêng lẻ và cụm từ/cấu trúc ngữ pháp
-      const prompt = `Provide a concise explanation of the English grammar topic "${grammarTopic.trim()}". Include 2-3 clear English examples. Also, suggest 5 useful English words or common phrases/grammatical structures (e.g., phrasal verbs, idioms, common sentence patterns) related to this grammar topic for a learner. Provide the output as a JSON object with keys 'explanation', 'examples' (an array of strings), and 'suggestedWords' (an array of strings).`;
-      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
-
-      const payload = {
-        contents: chatHistory,
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              explanation: { type: "STRING" },
-              examples: { type: "ARRAY", items: { type: "STRING" } },
-              suggestedWords: { type: "ARRAY", items: { type: "STRING" } }
-            },
-            propertyOrdering: ["explanation", "examples", "suggestedWords"]
-          }
-        }
-      };
-
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({ message: 'Không thể phân tích phản hồi lỗi.' }));
-        console.error("Lỗi gọi API Gemini (ngữ pháp):", response.status, "Chi tiết:", errorBody);
-        setError(`Lỗi từ AI: ${errorBody.error?.message || 'Không xác định.'} (Mã lỗi: ${response.status})`);
-        return;
-      }
-
-      const result = await response.json();
-
-      if (result.candidates && result.candidates.length > 0 &&
-          result.candidates[0].content && result.candidates[0].content.parts &&
-          result.candidates[0].content.parts.length > 0) {
-        const jsonText = result.candidates[0].content.parts[0].text;
-        const parsedJson = JSON.parse(jsonText);
-        setGrammarExplanation(parsedJson);
-        setMessage("Đã có giải thích ngữ pháp từ AI.");
-      } else {
-        console.error("API Gemini (ngữ pháp) trả về cấu trúc không mong muốn:", result);
-        setMessage("Không thể giải thích ngữ pháp. Phản hồi AI không hợp lệ.");
-      }
-    } catch (apiError) {
-      console.error("Lỗi khi gọi API Gemini (ngữ pháp):", apiError);
-      setError("Lỗi kết nối với AI. Vui lòng kiểm tra internet và thử lại.");
-    } finally {
-      setGrammarLoading(false);
       setTimeout(() => setMessage(''), 3000);
     }
   };
@@ -627,24 +532,11 @@ function App() {
 
   // Hàm xử lý khi nhấp vào một từ gợi ý
   const handleSelectSuggestedWord = (word) => {
-    setNewWord(word); // Chuyển từ gợi ý vào ô "Từ" (tiếng Anh)
+    setNewWord(word); // Chuyển từ gợi ý vào ô "Từ"
     setSuggestedRelatedWords([]); // Xóa danh sách gợi ý sau khi chọn
-    // Chuyển sang tab thêm từ nếu đang ở tab ngữ pháp
-    setActiveTab('addWord');
-    // Có thể tự động gọi suggestMeaningAndExample ở đây nếu muốn
-    // suggestMeaningAndExample();
+    // Bạn có thể cân nhắc gọi suggestMeaningAndExample(word) ở đây để tự động điền các trường khác
+    // nhưng để đơn giản, tôi sẽ không làm vậy để tránh gọi API tự động quá nhiều
   };
-
-  // Hàm xử lý khi nhấp vào một từ gợi ý ngữ pháp
-  const handleSelectGrammarSuggestedWord = (word) => {
-    setNewWord(word); // Chuyển từ gợi ý vào ô "Từ" (tiếng Anh)
-    setGrammarExplanation(null); // Xóa giải thích ngữ pháp
-    setSuggestedRelatedWords([]); // Xóa các từ liên quan cũ nếu có
-    setActiveTab('addWord'); // Chuyển sang tab thêm từ
-    // Có thể tự động gọi suggestMeaningAndExample ở đây nếu muốn
-    // suggestMeaningAndExample();
-  };
-
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter text-gray-800 flex flex-col items-center">
@@ -685,24 +577,15 @@ function App() {
             font-weight: 600;
             flex-direction: column; /* Allow content to stack vertically */
             gap: 0.5rem; /* Space between elements */
-            /* Add z-index to ensure proper stacking for flip effect */
-            z-index: 1; /* Default z-index for both faces */
           }
           .flashcard-front {
             background-color: #ffffff;
             color: #1f2937;
-            z-index: 2; /* Front face should be on top by default */
           }
           .flashcard-back {
             transform: rotateY(180deg);
             background-color: #edf2f7;
             color: #1f2937;
-          }
-          .flashcard.flipped .flashcard-front {
-            z-index: 1; /* When flipped, front goes behind */
-          }
-          .flashcard.flipped .flashcard-back {
-            z-index: 2; /* When flipped, back comes to front */
           }
           .flashcard-text-primary {
             font-size: 1.875rem; /* text-3xl */
@@ -775,170 +658,74 @@ function App() {
       {/* Các phần chức năng (Thêm từ, Flashcard, Quản lý) chỉ hiển thị khi đã đăng nhập */}
       {userId ? (
         <>
-          {/* Tabs for Add Word / Grammar */}
-          <div className="w-full max-w-4xl bg-white shadow-lg rounded-xl mb-4">
-            <div className="flex border-b border-gray-200">
-              <button
-                className={`py-3 px-6 text-lg font-semibold rounded-tl-xl ${activeTab === 'addWord' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-                onClick={() => { setActiveTab('addWord'); setGrammarExplanation(null); setSuggestedRelatedWords([]); }} // Clear grammar and related words when switching
-              >
-                Thêm Từ Mới
-              </button>
-              <button
-                className={`py-3 px-6 text-lg font-semibold rounded-tr-xl ${activeTab === 'grammar' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-                onClick={() => { setActiveTab('grammar'); setNewWord(''); setNewMeaning(''); setNewCategory(''); setNewPronunciation(''); setNewExampleSentence(''); setSuggestedRelatedWords([]); }} // Clear add word fields when switching
-              >
-                Học Ngữ pháp
-              </button>
+          {/* Phần thêm/chỉnh sửa từ mới */}
+          <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">
+              {editingWordId ? 'Chỉnh Sửa Từ' : 'Thêm Từ Mới'}
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <input
+                type="text"
+                placeholder="Từ (ví dụ: 'hello')"
+                value={newWord}
+                onChange={(e) => setNewWord(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Nghĩa (ví dụ: 'xin chào')"
+                value={newMeaning}
+                onChange={(e) => setNewMeaning(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Danh mục (ví dụ: 'Động từ')"
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Phiên âm (ví dụ: /həˈləʊ/)"
+                value={newPronunciation}
+                onChange={(e) => setNewPronunciation(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <input
+                type="text"
+                placeholder="Câu ví dụ (không bắt buộc)"
+                value={newExampleSentence}
+                onChange={(e) => setNewExampleSentence(e.target.value)}
+                className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 col-span-1 md:col-span-2 lg:col-span-1"
+              />
             </div>
+            <div className="flex space-x-4">
+              <button
+                onClick={handleSubmitWord}
+                className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                {editingWordId ? 'Cập Nhật Từ' : 'Thêm Từ'}
+              </button>
+              <button
+                onClick={suggestMeaningAndExample}
+                disabled={geminiLoading}
+                className="flex-1 bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {geminiLoading ? 'Đang gợi ý...' : 'Gợi ý từ AI'}
+              </button>
+              {editingWordId && (
+                <button
+                  onClick={handleCancelEdit}
+                  className="flex-1 bg-gray-400 text-white py-3 px-6 rounded-lg shadow-md hover:bg-gray-500 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
+                >
+                  Hủy Chỉnh Sửa
+                </button>
+              )}
+            </div>
+          </section>
 
-            {activeTab === 'addWord' ? (
-              // Content for Add Word Tab
-              <section className="p-6">
-                <h2 className="text-2xl font-bold text-gray-800 mb-4">
-                  {editingWordId ? 'Chỉnh Sửa Từ' : 'Thêm Từ Mới'}
-                </h2>
-                {/* Updated Grid Layout for inputs */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  {/* Row 1: English Word and Vietnamese Meaning */}
-                  <input
-                    type="text"
-                    placeholder="Từ (tiếng Anh / English word)"
-                    value={newWord}
-                    onChange={(e) => setNewWord(e.target.value)}
-                    className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Nghĩa (tiếng Việt / Vietnamese meaning)"
-                    value={newMeaning}
-                    onChange={(e) => setNewMeaning(e.target.value)}
-                    className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {/* Row 2: Category and Pronunciation */}
-                  <input
-                    type="text"
-                    placeholder="Danh mục (ví dụ: 'Danh từ')"
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Phiên âm (ví dụ: /həˈləʊ/)"
-                    value={newPronunciation}
-                    onChange={(e) => setNewPronunciation(e.target.value)}
-                    className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {/* Row 3: Example Sentence (full width on small screens, span 2 on medium/large) */}
-                  <textarea
-                    placeholder="Câu ví dụ (tiếng Anh, không bắt buộc)"
-                    value={newExampleSentence}
-                    onChange={(e) => setNewExampleSentence(e.target.value)}
-                    className="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 col-span-full resize-y min-h-[80px]" // Changed to col-span-full
-                    rows="3"
-                  ></textarea>
-                </div>
-                <div className="flex space-x-4">
-                  <button
-                    onClick={handleSubmitWord}
-                    className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                  >
-                    {editingWordId ? 'Cập Nhật Từ' : 'Thêm Từ'}
-                  </button>
-                  <button
-                    onClick={suggestMeaningAndExample}
-                    disabled={geminiLoading}
-                    className="flex-1 bg-green-500 text-white py-3 px-6 rounded-lg shadow-md hover:bg-green-600 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {geminiLoading ? 'Đang gợi ý...' : 'Gợi ý từ AI'}
-                  </button>
-                  {editingWordId && (
-                    <button
-                      onClick={handleCancelEdit}
-                      className="flex-1 bg-gray-400 text-white py-3 px-6 rounded-lg shadow-md hover:bg-gray-500 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-                    >
-                      Hủy Chỉnh Sửa
-                    </button>
-                  )}
-                </div>
-                {suggestedRelatedWords.length > 0 && (
-                  <div className="mt-6 p-4 bg-blue-50 rounded-lg shadow-inner">
-                    <h3 className="text-lg font-semibold text-blue-700 mb-2">Từ gợi ý:</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {suggestedRelatedWords.map((word, index) => (
-                        <span
-                          key={index}
-                          className="bg-blue-200 text-blue-800 px-3 py-1 rounded-full text-sm cursor-pointer hover:bg-blue-300 transition duration-200 ease-in-out"
-                          onClick={() => handleSelectSuggestedWord(word)}
-                        >
-                          {word}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </section>
-            ) : (
-              // Content for Grammar Tab
-              <section className="p-6">
-                <h2 className="text-2xl font-bold text-gray-800 mb-4">Học Ngữ pháp</h2>
-                <div className="flex gap-4 mb-4">
-                  <input
-                    type="text"
-                    placeholder="Nhập chủ đề ngữ pháp (ví dụ: 'thì hiện tại đơn')"
-                    value={grammarTopic}
-                    onChange={(e) => setGrammarTopic(e.target.value)}
-                    className="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <button
-                    onClick={getGrammarExplanationAndWords}
-                    disabled={grammarLoading}
-                    className="bg-purple-600 text-white py-3 px-6 rounded-lg shadow-md hover:bg-purple-700 transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {grammarLoading ? 'Đang tải...' : 'Giải thích Ngữ pháp'}
-                  </button>
-                </div>
-
-                {grammarExplanation && (
-                  <div className="mt-6 p-4 bg-gray-50 rounded-lg shadow-inner">
-                    <h3 className="text-xl font-semibold text-gray-800 mb-2">Giải thích:</h3>
-                    <p className="text-gray-700 mb-4 whitespace-pre-wrap">{grammarExplanation.explanation}</p>
-
-                    {grammarExplanation.examples && grammarExplanation.examples.length > 0 && (
-                      <>
-                        <h4 className="text-lg font-semibold text-gray-700 mb-2">Ví dụ:</h4>
-                        <ul className="list-disc list-inside text-gray-600 mb-4">
-                          {grammarExplanation.examples.map((ex, idx) => (
-                            <li key={idx}>{ex}</li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-
-                    {grammarExplanation.suggestedWords && grammarExplanation.suggestedWords.length > 0 && (
-                      <>
-                        <h4 className="text-lg font-semibold text-blue-700 mb-2">Từ/cụm từ gợi ý liên quan:</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {grammarExplanation.suggestedWords.map((word, idx) => (
-                            <span
-                              key={idx}
-                              className="bg-blue-200 text-blue-800 px-3 py-1 rounded-full text-sm cursor-pointer hover:bg-blue-300 transition duration-200 ease-in-out"
-                              onClick={() => handleSelectGrammarSuggestedWord(word)} // Click to add to New Word
-                            >
-                              {word}
-                            </span>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </section>
-            )}
-          </div> {/* End of Tabs */}
-
-          {/* Phần Flashcard (không thay đổi) */}
+          {/* Phần Flashcard */}
           <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6 mb-8">
             <h2 className="text-2xl font-bold text-gray-800 mb-4">Học Flashcard</h2>
             {words.length === 0 ? (
@@ -953,8 +740,7 @@ function App() {
                     onClick={handleFlipCard}
                   >
                     <div className="flashcard-face flashcard-front">
-                      {/* Fix: Display the word in the flashcard front with fallback */}
-                      <span className="flashcard-text-primary">{currentWord?.word || '(Không có từ)'}</span>
+                      <span className="flashcard-text-primary">{currentWord ? currentWord.word : 'Tải từ...'}</span>
                       {currentWord?.pronunciation && (
                         <span className="flashcard-text-secondary text-gray-500">{currentWord.pronunciation}</span>
                       )}
@@ -965,7 +751,7 @@ function App() {
                       )}
                     </div>
                     <div className="flashcard-face flashcard-back">
-                      <span className="flashcard-text-primary">{currentWord?.meaning || '(Không có nghĩa)'}</span>
+                      <span className="flashcard-text-primary">{currentWord ? currentWord.meaning : 'Tải nghĩa...'}</span>
                       {currentWord?.exampleSentence && (
                         <span className="flashcard-text-tertiary text-gray-600 mt-2">"{currentWord.exampleSentence}"</span>
                       )}
@@ -1023,7 +809,7 @@ function App() {
                   </div>
                 )}
 
-                {/* Phần gợi ý từ liên quan từ AI (ở tab Flashcard) */}
+                {/* Phần gợi ý từ liên quan từ AI */}
                 {currentWord && (
                   <div className="flex justify-center mt-4">
                     <button
@@ -1044,7 +830,7 @@ function App() {
                         <span
                           key={index}
                           className="bg-blue-200 text-blue-800 px-3 py-1 rounded-full text-sm cursor-pointer hover:bg-blue-300 transition duration-200 ease-in-out"
-                          onClick={() => handleSelectSuggestedWord(relatedWord)} // Reuse for general suggestion click
+                          onClick={() => handleSelectSuggestedWord(relatedWord)} // Thêm onClick handler
                         >
                           {relatedWord}
                         </span>
@@ -1060,7 +846,7 @@ function App() {
             )}
           </section>
 
-          {/* Phần quản lý từ vựng (không thay đổi) */}
+          {/* Phần quản lý từ vựng */}
           <section className="w-full max-w-4xl bg-white shadow-lg rounded-xl p-6">
             <h2 className="text-2xl font-bold text-gray-800 mb-4">Quản Lý Từ Vựng</h2>
             {words.length === 0 ? (

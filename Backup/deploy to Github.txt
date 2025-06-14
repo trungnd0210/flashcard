@@ -1,0 +1,4 @@
+git add .
+git commit -m "feat: Add Gemini API Key"
+git push origin main
+npm run deploys
